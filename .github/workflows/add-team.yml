@@ -2,7 +2,7 @@ name: Add Team to Org Workflow
 
 on:
   issues:
-    types: [opened]
+    types: [opened, reopened, labeled]
 
 jobs:
   add-team:
@@ -83,11 +83,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git checkout -b "$BRANCH"
-          echo "- $TEAM_NAME" >> "$FILE"
-          git add "$FILE"
-          git commit -m "Add team $TEAM_NAME to $ORG_NAME"
-          git push origin "$BRANCH"
+          # Check if branch already exists
+          if git ls-remote --exit-code --heads origin "$BRANCH"; then
+            echo "Branch $BRANCH already exists. Checking it out..."
+            git fetch origin "$BRANCH"
+            git checkout "$BRANCH"
+          else
+            echo "Creating new branch $BRANCH..."
+            git checkout -b "$BRANCH"
+          fi
+
+          # Avoid duplicate addition if the step is re-run
+          if ! grep -q "^- $TEAM_NAME$" "$FILE"; then
+            echo "- $TEAM_NAME" >> "$FILE"
+            git add "$FILE"
+            git commit -m "Add team $TEAM_NAME to $ORG_NAME"
+            git push origin "$BRANCH"
+          else
+            echo "Team $TEAM_NAME already in $FILE on branch $BRANCH"
+          fi
 
       - name: Create Pull Request
         if: steps.parse.outputs.create-pr == 'Yes'
@@ -100,14 +114,31 @@ jobs:
           script: |
             const { TEAM_NAME, ORG_NAME } = process.env;
             const branch = `feat/issue-${context.issue.number}`;
-            const { data: pr } = await github.rest.pulls.create({
+
+            // Check if PR already exists
+            const prs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Add group to ${TEAM_NAME} to ${ORG_NAME}`,
-              head: branch,
-              base: 'main',
-              body: `Closes #${context.issue.number}`
+              head: `${context.repo.owner}:${branch}`,
+              state: 'open'
             });
+
+            let pr;
+            if (prs.data.length > 0) {
+              pr = prs.data[0];
+              console.log(`PR already exists: ${pr.number}`);
+            } else {
+              const { data: newPr } = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `Add group to ${TEAM_NAME} to ${ORG_NAME}`,
+                head: branch,
+                base: 'main',
+                body: `Closes #${context.issue.number}`
+              });
+              pr = newPr;
+              console.log(`Created new PR: ${pr.number}`);
+            }
             core.setOutput('pr-number', pr.number);
 
       - name: Manual Approval
