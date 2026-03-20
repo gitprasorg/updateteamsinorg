@@ -1,0 +1,147 @@
+name: Add Team to Org Workflow
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  add-team:
+    if: contains(github.event.issue.labels.*.name, 'add-team')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: write
+      pull-requests: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse Issue Body
+        id: parse
+        run: |
+          BODY="${{ github.event.issue.body }}"
+          ORG_NAME=$(echo "$BODY" | grep -A 2 "Organization Name" | tail -n 1 | xargs)
+          TEAM_NAME=$(echo "$BODY" | grep -A 2 "Team Name" | tail -n 1 | xargs)
+          CREATE_PR=$(echo "$BODY" | grep -A 2 "Create PR automatically" | tail -n 1 | xargs)
+
+          if [ -z "$ORG_NAME" ] || [ -z "$TEAM_NAME" ]; then
+            echo "Error: Could not parse org-name or team-name from issue body"
+            exit 1
+          fi
+
+          echo "org-name=$ORG_NAME" >> "$GITHUB_OUTPUT"
+          echo "team-name=$TEAM_NAME" >> "$GITHUB_OUTPUT"
+          echo "create-pr=$CREATE_PR" >> "$GITHUB_OUTPUT"
+
+      - name: Update Issue Title
+        uses: actions/github-script@v7
+        env:
+          TEAM_NAME: ${{ steps.parse.outputs.team-name }}
+          ORG_NAME: ${{ steps.parse.outputs.org-name }}
+        with:
+          script: |
+            const { TEAM_NAME, ORG_NAME } = process.env;
+            github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              title: `Add group to ${TEAM_NAME} to ${ORG_NAME}`
+            });
+
+      - name: Validate Team Name
+        id: validate
+        run: |
+          TEAM_NAME="${{ steps.parse.outputs.team-name }}"
+          if [[ ! $TEAM_NAME =~ ^(dev|qa|ops)-[a-zA-Z0-9]{4}-developer$ ]]; then
+            echo "Invalid team name format: $TEAM_NAME"
+            gh issue comment ${{ github.event.issue.number }} --body "Error: Invalid team name format: $TEAM_NAME. Expected format: <dev/qa/ops>-<4characterappcode>-developer"
+            exit 1
+          fi
+
+      - name: Check if Team Exists
+        id: check-exists
+        run: |
+          ORG_NAME="${{ steps.parse.outputs.org-name }}"
+          TEAM_NAME="${{ steps.parse.outputs.team-name }}"
+          FILE="deploy/$ORG_NAME/teams.yaml"
+
+          if grep -q "^- $TEAM_NAME$" "$FILE"; then
+            echo "Team $TEAM_NAME already exists in $ORG_NAME"
+            gh issue comment ${{ github.event.issue.number }} --body "Error: Team $TEAM_NAME already exists in $ORG_NAME"
+            exit 1
+          fi
+
+      - name: Create Branch and Add Team
+        run: |
+          ORG_NAME="${{ steps.parse.outputs.org-name }}"
+          TEAM_NAME="${{ steps.parse.outputs.team-name }}"
+          BRANCH="feat/issue-${{ github.event.issue.number }}"
+          FILE="deploy/$ORG_NAME/teams.yaml"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          echo "- $TEAM_NAME" >> "$FILE"
+          git add "$FILE"
+          git commit -m "Add team $TEAM_NAME to $ORG_NAME"
+          git push origin "$BRANCH"
+
+      - name: Create Pull Request
+        if: steps.parse.outputs.create-pr == 'Yes'
+        id: cpr
+        uses: actions/github-script@v7
+        env:
+          TEAM_NAME: ${{ steps.parse.outputs.team-name }}
+          ORG_NAME: ${{ steps.parse.outputs.org-name }}
+        with:
+          script: |
+            const { TEAM_NAME, ORG_NAME } = process.env;
+            const branch = `feat/issue-${context.issue.number}`;
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Add group to ${TEAM_NAME} to ${ORG_NAME}`,
+              head: branch,
+              base: 'main',
+              body: `Closes #${context.issue.number}`
+            });
+            core.setOutput('pr-number', pr.number);
+
+      - name: Manual Approval
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: awesomepras
+          minimum-approvals: 1
+          issue-title: "Approval required: Add group to ${{ steps.parse.outputs.team-name }} to ${{ steps.parse.outputs.org-name }}"
+          issue-body: "Please approve the addition of team ${{ steps.parse.outputs.team-name }} to ${{ steps.parse.outputs.org-name }}. Comment 'approved', 'good', or 'lgtm' to proceed."
+          additional-approved-words: "good, lgtm"
+
+      - name: Merge Pull Request
+        if: steps.parse.outputs.create-pr == 'Yes'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.cpr.outputs.pr-number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: 'squash'
+            });
+
+      - name: Close Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: 'closed'
+            });
