@@ -3,7 +3,6 @@ name: Add Team to Org
 description: Request to add a new team to an organization
 title: "Add team to org"
 labels: "add-team"
----
 body:
   - type: dropdown
     id: org-name
