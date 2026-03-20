@@ -1,0 +1,39 @@
+name: Add Team to Org
+description: Request to add a new team to an organization
+title: "Add team to org"
+labels: ["add-team"]
+body:
+  - type: dropdown
+    id: org-name
+    attributes:
+      label: Organization Name
+      description: Select the organization to add the team to
+      options:
+        - infra
+        - sandbox
+    validations:
+      required: true
+  - type: input
+    id: team-name
+    attributes:
+      label: Team Name
+      placeholder: "<dev/qa/ops>-<4characterappcode>-developer"
+    validations:
+      required: true
+  - type: dropdown
+    id: create-pr
+    attributes:
+      label: Create PR automatically
+      options:
+        - "Yes"
+        - "No"
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: optional-info
+    attributes:
+      label: Optional Information
+      description: Any additional information related to this request
+    validations:
+      required: false
